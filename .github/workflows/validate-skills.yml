@@ -1,0 +1,28 @@
+name: Validate skills
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate repository structure
+        shell: pwsh
+        run: ./tools/Test-SkillRepository.ps1
+
+      - name: Test mineru-api-batch-convert
+        shell: pwsh
+        run: ./mineru-api-batch-convert.tests/Run-Tests.ps1
