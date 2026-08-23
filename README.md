@@ -13,9 +13,11 @@ Reusable Codex skills developed for a Zotero, Obsidian, and Codex literature-man
 Add this repository to the CCSwitch Skills repository manager:
 
 ```text
-Repository: Sapphir3/paper-library-skills
+Repository: https://github.com/Sapphir3/paper-library-skills
 Branch: main
 ```
+
+Use the full URL. The tested CCSwitch build rejected the `owner/name` shorthand even though its input hint advertised that format.
 
 Install a skill from the repository listing. A skill previously installed from a local ZIP must be uninstalled and reinstalled from this repository once so CCSwitch records its remote source. Later releases are detected by CCSwitch through directory-content hashes when **Check updates** is run.
 
