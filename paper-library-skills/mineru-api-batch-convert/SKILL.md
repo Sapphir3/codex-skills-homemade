@@ -14,9 +14,17 @@ Use the bundled PowerShell scripts on Windows. Treat every source PDF as read-on
 3. If no Zotero connector is available, ask for explicit PDF or directory paths.
 4. Pass directories with `-RootPath`; add `-Recurse` when nested folders are in scope.
 
-## Inspect Before Converting
+## Choose Scan Or Direct Conversion
 
-Run a scan first:
+For an explicitly authorized list of PDFs passed with `-PdfPath`, run `Convert` directly. The conversion action performs its own pre-conversion scan and post-conversion verification, so a separate `Scan` would duplicate work:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
+  -Action Convert -PdfPath "D:\Papers\Paper.pdf" -Model vlm -Language en
+```
+
+Run a separate scan first when a directory batch is in scope, the user asks for a preview or audit, or orphan review may be needed:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
@@ -49,7 +57,7 @@ To replace or remove the saved credential, use `-Action Configure` or `-Action C
 
 ## Convert
 
-Run conversion only when the user's request authorizes uploading the selected PDFs to MinerU:
+Run conversion only when the user's request authorizes uploading the selected PDFs to MinerU. After a directory scan, pass the reviewed directory or PDF scope to `Convert`; do not rescan an explicit PDF list separately because `Convert` handles that internally.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `

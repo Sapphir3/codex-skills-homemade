@@ -6,7 +6,7 @@ Public Codex skills developed and maintained across several work domains. Skills
 
 | Category | Skill | Purpose | Current release |
 |---|---|---|---|
-| `paper-library-skills` | `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v1.0.3` |
+| `paper-library-skills` | `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v1.0.4` |
 | `skill-development-tools` | `codex-skill-lifecycle` | Create, test, version, package, publish, and hand off homemade Codex skills | `v1.0.0` |
 
 ## CCSwitch Installation And Updates
