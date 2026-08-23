@@ -19,10 +19,14 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate repository structure
+      - name: Validate nested repository structure
         shell: pwsh
         run: ./tools/Test-SkillRepository.ps1
 
+      - name: Test codex-skill-lifecycle
+        shell: pwsh
+        run: ./skill-development-tools/codex-skill-lifecycle.tests/Run-Tests.ps1
+
       - name: Test mineru-api-batch-convert
         shell: pwsh
-        run: ./mineru-api-batch-convert.tests/Run-Tests.ps1
+        run: ./paper-library-skills/mineru-api-batch-convert.tests/Run-Tests.ps1

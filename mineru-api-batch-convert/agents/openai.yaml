@@ -1,4 +1,0 @@
-interface:
-  display_name: "MinerU API Batch Convert"
-  short_description: "Convert Zotero PDFs with the MinerU API"
-  default_prompt: "Use $mineru-api-batch-convert to scan selected paper folders and convert missing PDFs to Markdown with MinerU API."

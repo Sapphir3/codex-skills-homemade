@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Skill Lifecycle"
+  short_description: "Build, version, publish, and hand off Codex skills"
+  default_prompt: "Use $codex-skill-lifecycle to plan and release a Codex skill through local source, GitHub, and CCSwitch handoff."
