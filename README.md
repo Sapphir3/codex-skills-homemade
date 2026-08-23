@@ -6,7 +6,7 @@ Reusable Codex skills developed for a Zotero, Obsidian, and Codex literature-man
 
 | Skill | Purpose | Current release |
 |---|---|---|
-| `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v1.0.2` |
+| `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v1.0.3` |
 
 ## CCSwitch Installation And Updates
 

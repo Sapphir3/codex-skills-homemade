@@ -83,3 +83,5 @@ Recycling revalidates scope, file signature, ownership marker, source absence, a
 ## Report Results
 
 Report counts for current, converted, failed, untracked, stale, orphaned, and rename-candidate items. Include failed filenames and concise errors. Do not expose tokens, signed upload URLs, or full API response bodies.
+
+When a scan writes a JSON report, include its absolute path so the same report can be reused for recovery or an explicitly confirmed orphan-recycling action.
