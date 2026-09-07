@@ -30,3 +30,13 @@ jobs:
       - name: Test mineru-api-batch-convert
         shell: pwsh
         run: ./paper-library-skills/mineru-api-batch-convert.tests/Run-Tests.ps1
+
+      - name: Test MinerU credential setup and persistence
+        shell: pwsh
+        run: ./paper-library-skills/mineru-api-batch-convert.tests/Test-Credentials.ps1
+
+      - name: Test MinerU on Windows PowerShell
+        shell: powershell
+        run: |
+          ./paper-library-skills/mineru-api-batch-convert.tests/Run-Tests.ps1
+          ./paper-library-skills/mineru-api-batch-convert.tests/Test-Credentials.ps1

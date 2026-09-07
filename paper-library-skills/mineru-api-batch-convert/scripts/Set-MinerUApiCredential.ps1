@@ -1,8 +1,9 @@
 [CmdletBinding()]
-param([switch]$Clear)
+param([switch]$Clear, [ValidateSet('Auto','Console','Never')][string]$CredentialPrompt = 'Auto')
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "MinerUApiBatch.Core.psm1") -Force
+& (Get-Module MinerUApiBatch.Core) { param($mode) $script:CredentialPrompt = $mode } $CredentialPrompt
 
 if ($Clear) {
     Clear-MinerUApiCredential

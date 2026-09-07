@@ -1,95 +1,65 @@
 ---
 name: mineru-api-batch-convert
-description: Batch-convert Zotero or local academic PDF attachments to same-directory Markdown through the official MinerU API while preserving source PDFs, extracting image assets, skipping current outputs, resuming interrupted batches, and safely reporting or recycling generated Markdown whose source PDF was removed. Use when Codex needs to scan paper folders or Zotero-resolved attachment paths, create missing Markdown, audit conversion state, update a MinerU API credential, or clean up orphaned MinerU outputs on Windows.
+description: Convert authorized local or Zotero-resolved PDFs to same-directory Markdown and image assets through the MinerU API on Windows. Use for missing conversions, scoped batch recovery, conversion audits, local API credential setup, or explicitly confirmed orphan cleanup. Preserve PDFs and existing outputs; replacing stale generated outputs requires separate consent.
 ---
 
 # MinerU API Batch Convert
 
-Use the bundled PowerShell scripts on Windows. Treat every source PDF as read-only.
+Release: **2.0.0**. Use the bundled scripts with Windows PowerShell 5.1 or PowerShell 7. No local MinerU installation is required.
 
-## Resolve Inputs
+## Resolve Scope And Permission
 
-1. Use an available Zotero connector or plugin to resolve selected items to absolute local PDF attachment paths.
-2. Pass resolved files with `-PdfPath`. Do not assume a Zotero storage layout.
-3. If no Zotero connector is available, ask for explicit PDF or directory paths.
-4. Pass directories with `-RootPath`; add `-Recurse` when nested folders are in scope.
-
-## Choose Scan Or Direct Conversion
-
-For an explicitly authorized list of PDFs passed with `-PdfPath`, run `Convert` directly. The conversion action performs its own pre-conversion scan and post-conversion verification, so a separate `Scan` would duplicate work:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-  "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
-  -Action Convert -PdfPath "D:\Papers\Paper.pdf" -Model vlm -Language en
-```
-
-Run a separate scan first when a directory batch is in scope, the user asks for a preview or audit, or orphan review may be needed:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-  "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
-  -Action Scan -RootPath "D:\Papers" -Recurse
-```
-
-Interpret statuses as follows:
-
-- `Missing`: safe conversion candidate.
-- `Current` or `CurrentMetadataChanged`: skip.
-- `Stale`: source content changed; conversion may replace only a tracked MinerU output.
-- `ExistingUntracked`: never overwrite; report the collision.
-- `IncompleteAssets` or `MismatchedMarker`: report and require review.
-
-The output contract is `Paper.pdf`, `Paper.md`, and optionally `Paper.assets/` in the same directory. Generated Markdown contains a hidden ownership marker compatible with the local `mineru-batch-convert` skill.
-
-## Configure Credentials
-
-When no credential exists, or MinerU explicitly rejects it, tell the user to run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-  "<skill-directory>\scripts\Set-MinerUApiCredential.ps1"
-```
-
-The prompt is masked and the token is encrypted for the current Windows user with DPAPI under `%LOCALAPPDATA%`. Never request that the token be committed, written beside papers, included in a report, or printed. `MINERU_TOKEN` is an ephemeral override for controlled tests only.
-
-To replace or remove the saved credential, use `-Action Configure` or `-Action ClearCredential`.
+- Resolve selected Zotero attachments to absolute PDF paths through an available connector. If the user already supplied paths, use them directly; otherwise ask for paths when no connector is available.
+- Use `-PdfPath` for explicit files, or `-RootPath` for directories; add `-Recurse` only for authorized nested folders. Never scan the whole library by default.
+- Conversion requires permission to upload those PDFs to MinerU. This does **not** authorize replacing existing Markdown/assets or recycling orphans.
+- In v2, stale outputs are preserved by default. Show the affected files and obtain explicit replacement consent before using `-AllowReplaceStale` with the reviewed PDF list. The switch never permits overwriting untracked, malformed, or incomplete outputs. A marker proves origin, not absence of human edits.
 
 ## Convert
 
-Run conversion only when the user's request authorizes uploading the selected PDFs to MinerU. After a directory scan, pass the reviewed directory or PDF scope to `Convert`; do not rescan an explicit PDF list separately because `Convert` handles that internally.
+Run `Convert` directly for an authorized scope; it scans once, resumes eligible checkpoints, and verifies the original PDF list. No separate preflight scan is required.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-  "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
-  -Action Convert -PdfPath "D:\Papers\Paper.pdf" -Model vlm -Language en
+& "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
+  -Action Convert -PdfPath @("D:\Papers\Paper.pdf") -Language en
 ```
 
-Use `vlm` by default. Use `pipeline` only when the user prioritizes speed over formula and layout fidelity. Use `ch` for Chinese papers and `-Ocr` only for scanned/image-only PDFs.
+The output is `Paper.pdf` (unchanged), `Paper.md`, and optional `Paper.assets/`. Defaults: `vlm`, 20 files per batch, 3 concurrent transfers. Retain the PDF hash and image-integrity checks. Use `ch` for Chinese text and `-Ocr` for scanned/image-only PDFs; change model or transfer settings only for a concrete need.
 
-The script automatically resumes locally recorded unfinished batches before submitting new work. It verifies the PDF SHA-256 before publishing and refuses to overwrite untracked Markdown or assets.
+On first API use, the script opens a masked local token dialog, saves the credential with Windows DPAPI, and continues. **Never ask for a token in chat.** Each computer/user configures its own credential. Use `-CredentialPrompt Never` for unattended jobs; missing credentials or unresolved authentication stop API work. No-work conversions need no token.
 
-Read [references/mineru-api.md](references/mineru-api.md) when troubleshooting API errors, limits, recovery, or output structure.
+Do not switch to MCP/Flash or resubmit through another route after an uncertain failure. Local checkpoints prevent duplicate submissions; resume with the same authorized scope. Read [references/mineru-api.md](references/mineru-api.md) for credential replacement, API errors, recovery, limits, and advanced settings.
 
-## Handle Orphans
+## Preview Or Audit
 
-Only directory scans produce orphan cleanup candidates. Explicit Zotero file selections do not scan unrelated sibling Markdown.
-
-1. Show every item in `orphans` from the scan report.
-2. Exclude `renameCandidates`; they may represent a renamed PDF.
-3. Ask for explicit confirmation.
-4. Reuse the exact report path and run:
+Use `Scan` only when a preview, audit, or orphan review is requested:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-  "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
-  -Action Recycle -ReportPath "<report.json>" -ConfirmRecycle
+& "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
+  -Action Scan -RootPath "D:\Papers" -Recurse
 ```
 
-Recycling revalidates scope, file signature, ownership marker, source absence, and asset count. It sends the Markdown and owned assets directory to the Windows Recycle Bin. Never substitute `Remove-Item` for this workflow.
+| Status | Action |
+|---|---|
+| `Missing` | Eligible for authorized conversion. |
+| `Current`, `CurrentMetadataChanged` | Skip; referenced images and asset count are checked. |
+| `Stale` | Preserve unless replacement was explicitly approved. |
+| `ExistingUntracked`, `IncompleteAssets`, `InvalidMarker` | Report for review; do not upload or overwrite. |
 
-## Report Results
+Ownership checks require matching sibling filenames and reject linked paths. Legacy schema-1 markers and schema-1/2 checkpoints remain readable when safe. To identify the copy actually executing, run `-Action Environment` and report `skillVersion` and `skillPath`; do not infer a release from an installer hash.
 
-Report counts for current, converted, failed, untracked, stale, orphaned, and rename-candidate items. Include failed filenames and concise errors. Do not expose tokens, signed upload URLs, or full API response bodies.
+## Recycle Confirmed Orphans
 
-When a scan writes a JSON report, include its absolute path so the same report can be reused for recovery or an explicitly confirmed orphan-recycling action.
+Only directory scans find orphan candidates. Show `orphans`, exclude `renameCandidates`, and obtain explicit confirmation of the exact list. Reuse that report:
+
+```powershell
+& "<skill-directory>\scripts\Invoke-MinerUApiBatch.ps1" `
+  -Action Recycle -ReportPath "<reviewed-report.json>" -ConfirmRecycle
+```
+
+Recycling rechecks ownership, scope, signature, assets, source absence, and late renames. It uses the Windows Recycle Bin. Never replace this workflow with direct deletion.
+
+## Report
+
+Return the absolute JSON report path, scan summary (including stale/orphan/rename counts), converted/failed/review-required counts, warnings, and failed or blocked filenames with concise reasons. Include `timing.totalSeconds`; polling/wait is not a measurement of server-only parsing time.
+
+Fatal conversion errors write partial results before throwing; read the report named in the error instead of assuming all files failed or rerunning completed work. Preserve checkpoints for uncertain outcomes. Never expose tokens, signed URLs, or raw API response bodies. No additional library-wide scan is needed after a successful report.

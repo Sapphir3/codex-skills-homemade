@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-$script:SkillVersion = "1.0.2"
+$script:SkillVersion = "2.0.0"
 $script:MarkerRegex = '<!--\s*mineru-batch-convert\s+(\{.*\})\s*-->'
 $script:MaxFilesPerBatch = 50
 $script:MaxFileBytes = 200MB
@@ -65,27 +65,6 @@ function Get-MinerUStateRoot {
     return Join-Path (Get-MinerULocalDataRoot) "state"
 }
 
-function Set-MinerUApiCredential {
-    param([Security.SecureString]$Token)
-
-    if ($env:OS -ne "Windows_NT") {
-        throw "DPAPI credential storage is supported only on Windows."
-    }
-    if ($null -eq $Token) {
-        $Token = Read-Host "Enter MinerU API token" -AsSecureString
-    }
-    $credential = [PSCredential]::new("mineru-api", $Token)
-    $plain = $credential.GetNetworkCredential().Password
-    if ([string]::IsNullOrWhiteSpace($plain)) { throw "The API token cannot be empty." }
-
-    $path = Get-MinerUApiCredentialPath
-    $directory = Split-Path -Parent $path
-    if (-not (Test-Path -LiteralPath $directory)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-    $credential | Export-Clixml -LiteralPath $path -Force
-    return $path
-}
 
 function Clear-MinerUApiCredential {
     $path = Get-MinerUApiCredentialPath
@@ -94,28 +73,6 @@ function Clear-MinerUApiCredential {
     }
 }
 
-function Get-MinerUApiToken {
-    $environmentToken = [string]$env:MINERU_TOKEN
-    if (-not [string]::IsNullOrWhiteSpace($environmentToken)) {
-        return $environmentToken.Trim()
-    }
-
-    $path = Get-MinerUApiCredentialPath
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "No MinerU API token is configured. Run Invoke-MinerUApiBatch.ps1 -Action Configure."
-    }
-    try {
-        $credential = Import-Clixml -LiteralPath $path
-        $token = $credential.GetNetworkCredential().Password
-    }
-    catch {
-        throw "The saved MinerU API credential cannot be decrypted for this Windows user. Run -Action Configure."
-    }
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        throw "The saved MinerU API credential is empty. Run -Action Configure."
-    }
-    return $token
-}
 
 function Get-MinerUApiEnvironment {
     $credentialPath = Get-MinerUApiCredentialPath
@@ -126,6 +83,8 @@ function Get-MinerUApiEnvironment {
     else { 0 }
 
     return [pscustomobject]@{
+        skillVersion = $script:SkillVersion
+        skillPath = Split-Path -Parent $PSScriptRoot
         windows = $env:OS -eq "Windows_NT"
         powershellVersion = $PSVersionTable.PSVersion.ToString()
         credentialConfigured = (Test-Path -LiteralPath $credentialPath -PathType Leaf) -or (-not [string]::IsNullOrWhiteSpace([string]$env:MINERU_TOKEN))
@@ -153,49 +112,6 @@ function Get-FileSignature {
     return [pscustomobject]$signature
 }
 
-function Wait-ReadableStableFile {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [int]$TimeoutSeconds = 120,
-        [int]$StabilitySeconds = 2
-    )
-
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $previous = $null
-    $stableSince = $null
-    $lastError = $null
-    while ([DateTime]::UtcNow -lt $deadline) {
-        try {
-            $item = Get-Item -LiteralPath $Path -ErrorAction Stop
-            $stream = [System.IO.File]::Open(
-                $item.FullName,
-                [System.IO.FileMode]::Open,
-                [System.IO.FileAccess]::Read,
-                [System.IO.FileShare]::ReadWrite
-            )
-            $stream.Dispose()
-            $current = "$($item.Length)|$($item.LastWriteTimeUtc.Ticks)"
-            if ($current -eq $previous) {
-                if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
-                if (([DateTime]::UtcNow - $stableSince).TotalSeconds -ge $StabilitySeconds) {
-                    return $true
-                }
-            }
-            else {
-                $previous = $current
-                $stableSince = [DateTime]::UtcNow
-            }
-            $lastError = $null
-        }
-        catch {
-            $lastError = $_.Exception.Message
-            $stableSince = $null
-        }
-        Start-Sleep -Milliseconds 500
-    }
-    $detail = if ($lastError) { " Last error: $lastError" } else { "" }
-    throw "File did not become readable and stable within $TimeoutSeconds seconds: $Path.$detail"
-}
 
 function Read-MinerUMarker {
     param([Parameter(Mandatory)][string]$MarkdownPath)
@@ -215,6 +131,71 @@ function Read-MinerUMarker {
     if (-not $match.Success) { return $null }
     try { return ($match.Groups[1].Value | ConvertFrom-Json -ErrorAction Stop) }
     catch { return $null }
+}
+
+function Assert-MinerUPlainPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Linked paths require manual review.'
+        }
+        $current = Split-Path -Parent $current
+    }
+}
+
+function Get-MinerUOwnedPaths {
+    param([Parameter(Mandatory)][string]$MarkdownPath, [Parameter(Mandatory)]$Marker)
+
+    foreach ($property in @('schemaVersion','sourcePdf','sourceLength','sourceLastWriteUtc','assetsDirectory','assetCount')) {
+        if (!$Marker.PSObject.Properties[$property]) { throw "Incomplete MinerU marker: $property." }
+    }
+    if ([string]$Marker.schemaVersion -ne '1' -or [string]$Marker.assetCount -notmatch '^\d+$' -or
+        [string]$Marker.sourceLength -notmatch '^\d+$') { throw 'Invalid MinerU marker schema or counts.' }
+    $null = [int]$Marker.assetCount
+    $null = [int64]$Marker.sourceLength
+    $null = [datetime]$Marker.sourceLastWriteUtc
+    if ($Marker.PSObject.Properties['sourceSha256'] -and $Marker.sourceSha256 -and
+        [string]$Marker.sourceSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid source hash in MinerU marker.' }
+    $markdown = [IO.Path]::GetFullPath($MarkdownPath)
+    $directory = Split-Path -Parent $markdown
+    $stem = [IO.Path]::GetFileNameWithoutExtension($markdown)
+    if ([IO.Path]::GetExtension($markdown) -ine '.md' -or [string]$Marker.sourcePdf -ine ($stem + '.pdf')) {
+        throw 'MinerU marker does not name the matching sibling PDF.'
+    }
+    $assets = Join-Path $directory ($stem + '.assets')
+    if (([int]$Marker.assetCount -gt 0 -and [string]$Marker.assetsDirectory -ine ($stem + '.assets')) -or
+        ([int]$Marker.assetCount -eq 0 -and $Marker.assetsDirectory)) {
+        throw 'MinerU marker does not name the matching sibling assets directory.'
+    }
+    $pdf = Join-Path $directory ([string]$Marker.sourcePdf)
+    foreach ($path in @($markdown, $pdf, $assets)) { Assert-MinerUPlainPath -Path $path }
+    return [pscustomobject]@{ markdownPath=$markdown; pdfPath=$pdf; assetsPath=$assets }
+}
+
+function Assert-MinerUOutputAssets {
+    param([Parameter(Mandatory)]$Paths, [Parameter(Mandatory)]$Marker)
+
+    $files = @()
+    if (Test-Path -LiteralPath $Paths.assetsPath) {
+        if (!(Test-Path -LiteralPath $Paths.assetsPath -PathType Container) -or [int]$Marker.assetCount -eq 0) {
+            throw 'Unexpected assets path requires review.'
+        }
+        $entries = @(Get-ChildItem -LiteralPath $Paths.assetsPath -Recurse -Force -ErrorAction Stop)
+        foreach ($entry in $entries) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked assets require manual review.' }
+        }
+        $files = @($entries | Where-Object { !$_.PSIsContainer })
+    }
+    if ($files.Count -ne [int]$Marker.assetCount) { throw 'Asset file count no longer matches the MinerU marker.' }
+    $content = [IO.File]::ReadAllText($Paths.markdownPath)
+    $images = Convert-MinerUImageLinks -Content $content -BaseDirectory (Split-Path -Parent $Paths.markdownPath) -AssetsName ([IO.Path]::GetFileName($Paths.assetsPath))
+    foreach ($image in $images.images) {
+        if (!(Test-PathWithin -Path $image.FullName -Root $Paths.assetsPath)) { throw 'Image is outside the owned assets directory.' }
+        Assert-MinerUPlainPath -Path $image.FullName
+    }
 }
 
 function New-ScanInputs {
@@ -294,24 +275,24 @@ function Get-PdfStatus {
         }
     }
 
+    try { $owned = Get-MinerUOwnedPaths -MarkdownPath $markdownPath -Marker $marker }
+    catch {
+        return [pscustomobject]@{ title=$pdf.BaseName; pdfPath=$pdf.FullName; markdownPath=$markdownPath; assetsPath=$assetsPath; status='InvalidMarker'; marker=$marker; error=$_.Exception.Message }
+    }
+    try { Assert-MinerUOutputAssets -Paths $owned -Marker $marker }
+    catch {
+        return [pscustomobject]@{ title=$pdf.BaseName; pdfPath=$pdf.FullName; markdownPath=$markdownPath; assetsPath=$assetsPath; status='IncompleteAssets'; marker=$marker; error=$_.Exception.Message }
+    }
     $status = "Current"
-    if ([string]$marker.sourcePdf -ine $pdf.Name) {
-        $status = "MismatchedMarker"
-    }
-    elseif ($marker.assetCount -gt 0 -and -not (Test-Path -LiteralPath $assetsPath -PathType Container)) {
-        $status = "IncompleteAssets"
-    }
-    else {
-        $signature = Get-FileSignature -Path $pdf.FullName
-        $sameLength = [int64]$marker.sourceLength -eq [int64]$signature.length
-        $sameTime = [string]$marker.sourceLastWriteUtc -eq [string]$signature.lastWriteUtc
-        if (-not ($sameLength -and $sameTime)) {
-            if ($marker.sourceSha256) {
-                $hash = (Get-FileHash -LiteralPath $pdf.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-                $status = if ($hash -eq [string]$marker.sourceSha256) { "CurrentMetadataChanged" } else { "Stale" }
-            }
-            else { $status = "Stale" }
+    $signature = Get-FileSignature -Path $pdf.FullName
+    $sameLength = [int64]$marker.sourceLength -eq [int64]$signature.length
+    $sameTime = ([datetime]$marker.sourceLastWriteUtc).ToUniversalTime().Ticks -eq ([datetime]$signature.lastWriteUtc).ToUniversalTime().Ticks
+    if (-not ($sameLength -and $sameTime)) {
+        if ($marker.PSObject.Properties['sourceSha256'] -and $marker.sourceSha256) {
+            $hash = (Get-FileHash -LiteralPath $pdf.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $status = if ($hash -eq [string]$marker.sourceSha256) { "CurrentMetadataChanged" } else { "Stale" }
         }
+        else { $status = "Stale" }
     }
 
     return [pscustomobject]@{
@@ -341,7 +322,7 @@ function Find-RenameCandidate {
         [Parameter(Mandatory)]$Marker
     )
 
-    if (-not $Marker.sourceSha256 -or -not $Marker.sourceLength) { return $null }
+    if (!$Marker.PSObject.Properties['sourceSha256'] -or -not $Marker.sourceSha256 -or -not $Marker.sourceLength) { return $null }
     $directory = Split-Path -Parent $MarkdownPath
     $pdfs = Get-ChildItem -LiteralPath $directory -File -Filter "*.pdf" -ErrorAction SilentlyContinue |
         Where-Object { $_.Length -eq [int64]$Marker.sourceLength }
@@ -363,16 +344,19 @@ function New-MinerUScanReport {
     $items = foreach ($pdf in $inputs.pdfs) { Get-PdfStatus -PdfPath $pdf }
     $orphans = New-Object System.Collections.Generic.List[object]
     $renameCandidates = New-Object System.Collections.Generic.List[object]
+    $warnings = @($inputs.warnings)
     foreach ($markdownPath in (Get-GeneratedMarkdownFiles -Scopes $inputs.scopes)) {
         $marker = Read-MinerUMarker -MarkdownPath $markdownPath
-        $expectedPdf = Join-Path (Split-Path -Parent $markdownPath) ([string]$marker.sourcePdf)
+        try { $owned = Get-MinerUOwnedPaths -MarkdownPath $markdownPath -Marker $marker }
+        catch { $warnings += "Review required for ${markdownPath}: $($_.Exception.Message)"; continue }
+        $expectedPdf = $owned.pdfPath
         if (Test-Path -LiteralPath $expectedPdf -PathType Leaf) { continue }
         $renamedPdf = Find-RenameCandidate -MarkdownPath $markdownPath -Marker $marker
         $mdSignature = Get-FileSignature -Path $markdownPath
         $entry = [pscustomobject]@{
             title = [System.IO.Path]::GetFileNameWithoutExtension([string]$marker.sourcePdf)
             markdownPath = $markdownPath
-            assetsPath = if ($marker.assetsDirectory) { Join-Path (Split-Path -Parent $markdownPath) ([string]$marker.assetsDirectory) } else { $null }
+            assetsPath = if ($marker.assetsDirectory) { $owned.assetsPath } else { $null }
             expectedPdfPath = $expectedPdf
             renamedPdfPath = $renamedPdf
             markdownLength = $mdSignature.length
@@ -389,6 +373,7 @@ function New-MinerUScanReport {
         untrackedCount = @($items | Where-Object status -eq "ExistingUntracked").Count
         staleCount = @($items | Where-Object status -eq "Stale").Count
         incompleteCount = @($items | Where-Object status -eq "IncompleteAssets").Count
+        invalidMarkerCount = @($items | Where-Object status -eq "InvalidMarker").Count
         orphanCount = $orphans.Count
         renameCandidateCount = $renameCandidates.Count
     }
@@ -399,7 +384,7 @@ function New-MinerUScanReport {
         reportId = [guid]::NewGuid().ToString("N")
         createdUtc = [DateTime]::UtcNow.ToString("o")
         scanScopes = @($inputs.scopes)
-        warnings = @($inputs.warnings)
+        warnings = @($warnings)
         summary = [pscustomobject]$summary
         items = @($items)
         orphans = $orphans.ToArray()
@@ -449,7 +434,7 @@ function Invoke-MinerURecycle {
 
     if (-not $ConfirmRecycle) { throw "Recycling requires -ConfirmRecycle after the user reviews the orphan report." }
     if ($env:OS -ne "Windows_NT") { throw "Windows Recycle Bin cleanup is supported only on Windows." }
-    $report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json
+    $report = Get-Content -Raw -LiteralPath $ReportPath -Encoding UTF8 | ConvertFrom-Json
     if ([int]$report.schemaVersion -ne 1) { throw "Unsupported report schema." }
 
     $results = New-Object System.Collections.Generic.List[object]
@@ -458,7 +443,8 @@ function Invoke-MinerURecycle {
             if (-not (Test-Path -LiteralPath $orphan.markdownPath -PathType Leaf)) { throw "Markdown no longer exists." }
             $insideScope = $false
             foreach ($scope in @($report.scanScopes)) {
-                if (Test-PathWithin -Path $orphan.markdownPath -Root $scope.path) { $insideScope = $true; break }
+                if ((Test-PathWithin -Path $orphan.markdownPath -Root $scope.path) -and
+                    ($scope.recursive -or (Get-NormalizedPath (Split-Path -Parent $orphan.markdownPath)) -eq (Get-NormalizedPath $scope.path))) { $insideScope = $true; break }
             }
             if (-not $insideScope) { throw "Markdown is outside the original scan scopes." }
 
@@ -472,20 +458,16 @@ function Invoke-MinerURecycle {
             if ($null -eq $marker -or [string]$marker.sourcePdf -ne [string]$orphan.marker.sourcePdf) {
                 throw "MinerU ownership marker is missing or changed."
             }
-            if (Test-Path -LiteralPath $orphan.expectedPdfPath -PathType Leaf) {
+            $owned = Get-MinerUOwnedPaths -MarkdownPath $orphan.markdownPath -Marker $marker
+            if ((Get-NormalizedPath $orphan.expectedPdfPath) -ne (Get-NormalizedPath $owned.pdfPath)) { throw 'Reported source path does not match the owned sibling PDF.' }
+            $expectedAssetsPath = if ($marker.assetsDirectory) { $owned.assetsPath } else { $null }
+            if ([string]$orphan.assetsPath -ine [string]$expectedAssetsPath) { throw 'Reported assets path does not match the owned sibling directory.' }
+            if (Test-Path -LiteralPath $owned.pdfPath) {
                 throw "The source PDF exists again. Run Scan again."
             }
-
-            if ($orphan.assetsPath -and (Test-Path -LiteralPath $orphan.assetsPath -PathType Container)) {
-                $expectedAssets = Join-Path (Split-Path -Parent $orphan.markdownPath) ([string]$marker.assetsDirectory)
-                if ((Get-NormalizedPath -Path $expectedAssets) -ne (Get-NormalizedPath -Path $orphan.assetsPath)) {
-                    throw "Assets path does not match the Markdown marker."
-                }
-                $actualAssetCount = @(Get-ChildItem -LiteralPath $orphan.assetsPath -File -Recurse -ErrorAction Stop).Count
-                if ($actualAssetCount -ne [int]$marker.assetCount) {
-                    throw "Assets changed after conversion; refusing to recycle them."
-                }
-            }
+            if (!$marker.PSObject.Properties['sourceSha256'] -or !$marker.sourceSha256) { throw 'Legacy orphan lacks a source hash for rename verification; review manually.' }
+            if (Find-RenameCandidate -MarkdownPath $orphan.markdownPath -Marker $marker) { throw 'A renamed source PDF now exists. Run Scan again.' }
+            Assert-MinerUOutputAssets -Paths $owned -Marker $marker
 
             if ($orphan.assetsPath -and (Test-Path -LiteralPath $orphan.assetsPath -PathType Container)) {
                 Send-ToRecycleBin -Path $orphan.assetsPath -Kind Directory
@@ -554,32 +536,45 @@ function Expand-MinerUSafeZip {
 }
 
 function Convert-MinerUImageLinks {
-    param(
-        [Parameter(Mandatory)][string]$Content,
-        [Parameter(Mandatory)][object[]]$Images,
-        [Parameter(Mandatory)][string]$BaseDirectory,
-        [Parameter(Mandatory)][string]$AssetsName
-    )
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Content,
+          [Parameter(Mandatory)][string]$BaseDirectory,
+          [Parameter(Mandatory)][string]$AssetsName)
 
-    $replacements = New-Object System.Collections.Generic.List[object]
-    $index = 0
-    foreach ($image in $Images) {
-        $relative = (Get-RelativePath -BaseDirectory $BaseDirectory -Path $image.FullName).Replace("\", "/")
-        $target = [System.Uri]::EscapeUriString("$AssetsName/$relative")
-        $encodedRelative = [System.Uri]::EscapeUriString($relative)
-        $variants = @("./$relative", $relative, "./$encodedRelative", $encodedRelative) | Sort-Object Length -Descending -Unique
-        foreach ($variant in $variants) {
-            if ([string]::IsNullOrEmpty($variant) -or -not $Content.Contains($variant)) { continue }
-            $placeholder = "__MINERU_ASSET_$($index)_$([guid]::NewGuid().ToString('N'))__"
-            $Content = $Content.Replace($variant, $placeholder)
-            $replacements.Add([pscustomobject]@{ placeholder = $placeholder; target = $target })
-            $index++
-        }
+    # Capture just destinations, so filenames mentioned in prose are never rewritten.
+    $direct = '!\[[^\]\r\n]*\]\(\s*(?:<(?<url>[^>\r\n]+)>|(?<url>(?:[^\s()]|\([^()\r\n]*\))+))(?:\s+["''][^\r\n]*?["''])?\s*\)'
+    $html = '<img\b[^>]*?\bsrc\s*=\s*["''](?<url>[^"'']+)["'']'
+    $refs = [Collections.Generic.List[object]]::new()
+    foreach ($pattern in @($direct, $html)) {
+        foreach ($match in [regex]::Matches($Content, $pattern, 'IgnoreCase')) { $refs.Add($match.Groups['url']) }
     }
-    foreach ($replacement in $replacements) {
-        $Content = $Content.Replace($replacement.placeholder, $replacement.target)
+    $ids=@{}
+    foreach ($match in [regex]::Matches($Content, '!\[(?<alt>[^\]]+)\](?:\[(?<id>[^\]]*)\])?(?!\()', 'IgnoreCase')) {
+        $id=if ($match.Groups['id'].Success -and $match.Groups['id'].Value) {$match.Groups['id'].Value} else {$match.Groups['alt'].Value}
+        $ids[$id.Trim().ToLowerInvariant()]=$true
     }
-    return $Content
+    foreach ($match in [regex]::Matches($Content, '(?m)^\s{0,3}\[(?<id>[^\]]+)\]:\s*(?:<(?<url>[^>\r\n]+)>|(?<url>\S+))')) {
+        if ($ids.ContainsKey($match.Groups['id'].Value.Trim().ToLowerInvariant())) { $refs.Add($match.Groups['url']) }
+    }
+    $images=@{}
+    foreach ($ref in @($refs | Sort-Object Index -Descending -Unique)) {
+        $raw=[Net.WebUtility]::HtmlDecode($ref.Value)
+        if ($raw -match '^data:image/') { continue }
+        if ($raw -match '^[a-zA-Z][a-zA-Z0-9+.-]*:' -or $raw.StartsWith('//')) { throw 'Result contains a non-local image; local assets are required.' }
+        $relative=[Uri]::UnescapeDataString($raw).Replace('/',[IO.Path]::DirectorySeparatorChar)
+        if ([IO.Path]::IsPathRooted($relative)) { throw 'Result contains an absolute image path.' }
+        $path=[IO.Path]::GetFullPath((Join-Path $BaseDirectory $relative))
+        if (!(Test-PathWithin -Path $path -Root $BaseDirectory) -or !(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Result image is missing or outside its artifact directory: $raw" }
+        $file=Get-Item -LiteralPath $path
+        if ($script:ImageExtensions -notcontains $file.Extension.ToLowerInvariant()) { throw 'Unsupported result image type.' }
+        $images[$path]=$file
+        $relative=(Get-RelativePath -BaseDirectory $BaseDirectory -Path $path).Replace('\','/')
+        $target=(("$AssetsName/$relative" -split '/') | ForEach-Object {
+            # .NET Framework uses older URI rules; enforce RFC 3986 for Markdown.
+            [Uri]::EscapeDataString($_).Replace('(', '%28').Replace(')', '%29').Replace("'", '%27').Replace('!', '%21').Replace('*', '%2A')
+        }) -join '/'
+        $Content=$Content.Remove($ref.Index,$ref.Length).Insert($ref.Index,$target)
+    }
+    return [pscustomobject]@{ content=$Content; images=@($images.Values) }
 }
 
 function Publish-MinerUApiOutput {
@@ -589,17 +584,24 @@ function Publish-MinerUApiOutput {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$Language,
         [Parameter(Mandatory)][string]$BatchId,
-        [Parameter(Mandatory)][string]$SourceSha256
+        [Parameter(Mandatory)][string]$SourceSha256,
+        [switch]$AllowReplaceStale
     )
 
     $pdf = Get-Item -LiteralPath $PdfPath -ErrorAction Stop
     $markdownPath = [System.IO.Path]::ChangeExtension($pdf.FullName, ".md")
     $assetsName = $pdf.BaseName + ".assets"
     $assetsPath = Join-Path $pdf.DirectoryName $assetsName
+    foreach ($path in @($pdf.FullName, $markdownPath, $assetsPath)) { Assert-MinerUPlainPath -Path $path }
     $existingMarker = $null
+    $existingMarkdownHash = $null
     if (Test-Path -LiteralPath $markdownPath -PathType Leaf) {
-        $existingMarker = Read-MinerUMarker -MarkdownPath $markdownPath
-        if ($null -eq $existingMarker) { throw "Untracked Markdown exists; refusing to overwrite: $markdownPath" }
+        $existingStatus = Get-PdfStatus -PdfPath $pdf.FullName
+        if (!$AllowReplaceStale -or $existingStatus.status -ne 'Stale') {
+            throw "Existing output ($($existingStatus.status)) requires review and explicit stale-replacement consent; output preserved."
+        }
+        $existingMarker = $existingStatus.marker
+        $existingMarkdownHash = (Get-FileHash -LiteralPath $markdownPath -Algorithm SHA256).Hash
     }
     elseif (Test-Path -LiteralPath $assetsPath -PathType Container) {
         throw "Untracked assets directory exists; refusing to overwrite: $assetsPath"
@@ -608,9 +610,10 @@ function Publish-MinerUApiOutput {
     $primary = Get-PrimaryMarkdown -OutputPath $StagePath -ExpectedBaseName $pdf.BaseName
     if ($null -eq $primary) { throw "MinerU produced no Markdown for: $($pdf.FullName)" }
     $content = [System.IO.File]::ReadAllText($primary.FullName)
-    $images = @(Get-ChildItem -LiteralPath $primary.DirectoryName -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $script:ImageExtensions -contains $_.Extension.ToLowerInvariant() })
-    $content = Convert-MinerUImageLinks -Content $content -Images $images -BaseDirectory $primary.DirectoryName -AssetsName $assetsName
+    if ([string]::IsNullOrWhiteSpace($content)) { throw 'MinerU produced empty Markdown.' }
+    $normalized = Convert-MinerUImageLinks -Content $content -BaseDirectory $primary.DirectoryName -AssetsName $assetsName
+    $images = @($normalized.images)
+    $content = $normalized.content
 
     $publishRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mineru-api-publish-" + [guid]::NewGuid().ToString("N"))
     $publishAssets = Join-Path $publishRoot $assetsName
@@ -664,31 +667,43 @@ function Publish-MinerUApiOutput {
 
         $movedOldMarkdown = $false
         $movedOldAssets = $false
+        $publishedMarkdown = $false
+        $publishedAssets = $false
         try {
             if (Test-Path -LiteralPath $markdownPath -PathType Leaf) {
                 $checkMarker = Read-MinerUMarker -MarkdownPath $markdownPath
-                if ($null -eq $checkMarker) { throw "Markdown ownership changed during conversion: $markdownPath" }
+                if ($null -eq $checkMarker -or !$existingMarkdownHash -or (Get-FileHash -LiteralPath $markdownPath -Algorithm SHA256).Hash -ne $existingMarkdownHash) { throw "Markdown changed during conversion: $markdownPath" }
                 Move-Item -LiteralPath $markdownPath -Destination $backupMarkdown
                 $movedOldMarkdown = $true
             }
             if (Test-Path -LiteralPath $assetsPath -PathType Container) {
                 if (-not $movedOldMarkdown) { throw "Assets appeared without tracked Markdown: $assetsPath" }
+                $null = Get-MinerUOwnedPaths -MarkdownPath $markdownPath -Marker $existingMarker
                 Move-Item -LiteralPath $assetsPath -Destination $backupAssets
                 $movedOldAssets = $true
             }
-            if ($images.Count -gt 0) { Move-Item -LiteralPath $partialAssets -Destination $assetsPath }
+            if ($images.Count -gt 0) { Move-Item -LiteralPath $partialAssets -Destination $assetsPath; $publishedAssets=$true }
             Move-Item -LiteralPath $partialMarkdown -Destination $markdownPath
+            $publishedMarkdown=$true
         }
         catch {
-            if (Test-Path -LiteralPath $markdownPath) { Remove-Item -LiteralPath $markdownPath -Force }
-            if (Test-Path -LiteralPath $assetsPath) { Remove-Item -LiteralPath $assetsPath -Recurse -Force }
+            if ($publishedMarkdown -and (Test-Path -LiteralPath $markdownPath)) { Remove-Item -LiteralPath $markdownPath -Force }
+            if ($publishedAssets -and (Test-Path -LiteralPath $assetsPath)) {
+                if ((Get-NormalizedPath (Split-Path -Parent $assetsPath)) -ne (Get-NormalizedPath $pdf.DirectoryName)) { throw 'Unsafe rollback assets path.' }
+                Assert-MinerUPlainPath -Path $assetsPath
+                Remove-Item -LiteralPath $assetsPath -Recurse -Force
+            }
             if ($movedOldMarkdown -and (Test-Path -LiteralPath $backupMarkdown)) { Move-Item -LiteralPath $backupMarkdown -Destination $markdownPath }
             if ($movedOldAssets -and (Test-Path -LiteralPath $backupAssets)) { Move-Item -LiteralPath $backupAssets -Destination $assetsPath }
             throw
         }
         finally {
             if (Test-Path -LiteralPath $partialMarkdown) { Remove-Item -LiteralPath $partialMarkdown -Force }
-            if (Test-Path -LiteralPath $partialAssets) { Remove-Item -LiteralPath $partialAssets -Recurse -Force }
+            if (Test-Path -LiteralPath $partialAssets) {
+                if ((Get-NormalizedPath (Split-Path -Parent $partialAssets)) -ne (Get-NormalizedPath $pdf.DirectoryName)) { throw 'Unsafe partial assets path.' }
+                Assert-MinerUPlainPath -Path $partialAssets
+                Remove-Item -LiteralPath $partialAssets -Recurse -Force
+            }
         }
 
         if (Test-Path -LiteralPath $backupAssets) { Send-ToRecycleBin -Path $backupAssets -Kind Directory }
@@ -704,7 +719,11 @@ function Publish-MinerUApiOutput {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $publishRoot) { Remove-Item -LiteralPath $publishRoot -Recurse -Force }
+        if ((Test-Path -LiteralPath $publishRoot) -and (Test-PathWithin -Path $publishRoot -Root ([IO.Path]::GetTempPath())) -and
+            (Split-Path -Leaf $publishRoot) -like 'mineru-api-publish-*') {
+            Assert-MinerUPlainPath -Path $publishRoot
+            Remove-Item -LiteralPath $publishRoot -Recurse -Force
+        }
     }
 }
 
@@ -713,10 +732,11 @@ function New-MinerUAuthException {
 
     $exception = [System.UnauthorizedAccessException]::new($Message)
     $exception.Data["MinerUAuthFailure"] = $true
+    $exception.Data['MinerUSubmissionRejected'] = $true
     return $exception
 }
 
-function Invoke-MinerUApiRequest {
+function Invoke-MinerUApiRequestOnce {
     param(
         [Parameter(Mandatory)][string]$Uri,
         [Parameter(Mandatory)][string]$Token,
@@ -732,7 +752,7 @@ function Invoke-MinerUApiRequest {
     try {
         if ($Method -eq "POST") {
             $json = $Body | ConvertTo-Json -Depth 10 -Compress
-            $response = Invoke-RestMethod -Uri $Uri -Method Post -Headers $headers -ContentType "application/json" -Body $json -TimeoutSec 60
+            $response = Invoke-RestMethod -Uri $Uri -Method Post -Headers $headers -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec 60
         }
         else {
             $response = Invoke-RestMethod -Uri $Uri -Method Get -Headers $headers -TimeoutSec 60
@@ -740,24 +760,30 @@ function Invoke-MinerUApiRequest {
     }
     catch {
         $status = $null
-        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+        if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
             $status = [int]$_.Exception.Response.StatusCode
         }
-        if ($status -eq 401 -or $status -eq 403) {
+        $quotaResponse = $_.ErrorDetails -and $_.ErrorDetails.Message -match '(?i)quota|rate.?limit|too many requests|daily.?limit|insufficient.?credits'
+        if (($status -eq 401 -or $status -eq 403) -and !$quotaResponse) {
             throw (New-MinerUAuthException -Message "MinerU authentication failed with HTTP $status.")
         }
-        $message = $_.Exception.Message
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $message = $_.ErrorDetails.Message }
-        if ($message.Length -gt 500) { $message = $message.Substring(0, 500) }
-        throw "MinerU request failed at $Uri. HTTP $status. $message"
+        $exception = [InvalidOperationException]::new("MinerU API request failed (HTTP $status). Check connectivity, quota, or service availability.")
+        if ($status -in @(400, 402, 404, 413, 415, 422, 429) -or ($status -eq 403 -and $quotaResponse)) {
+            $exception.Data['MinerUSubmissionRejected'] = $true
+        }
+        throw $exception
     }
 
-    if ($null -ne $response.code -and [int]$response.code -ne 0) {
+    if ($null -ne $response.code -and [string]$response.code -ne '0') {
         $message = [string]$response.msg
-        if ($message -match '(?i)token|unauthori[sz]ed|forbidden|authenticat|expired') {
+        if ($message -match '(?i)((invalid|expired|revoked|missing)\s+(api\s+)?token|token\s+(is\s+)?(invalid|expired|revoked)|unauthori[sz]ed|authentication\s+failed)') {
             throw (New-MinerUAuthException -Message "MinerU rejected the API token (code $($response.code)).")
         }
-        throw "MinerU API error code=$($response.code) msg=$message"
+        $exception = [InvalidOperationException]::new('MinerU API returned an unsuccessful response. Check request parameters, quota, or service availability.')
+        if ($message -match '(?i)quota|rate.?limit|too many requests|daily.?limit|insufficient.?credits|invalid\s+(parameter|request|file)|validation\s+failed|file\s+too\s+large') {
+            $exception.Data['MinerUSubmissionRejected'] = $true
+        }
+        throw $exception
     }
     return $response.data
 }
@@ -779,9 +805,7 @@ function Send-MinerUUpload {
         $response = $client.PutAsync($SignedUrl, $content).GetAwaiter().GetResult()
         try {
             if (-not $response.IsSuccessStatusCode) {
-                $detail = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-                if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) }
-                throw "Upload failed with HTTP $([int]$response.StatusCode): $detail"
+                throw "Upload failed with HTTP $([int]$response.StatusCode)."
             }
         }
         finally { $response.Dispose() }
@@ -805,7 +829,7 @@ function Receive-MinerUBinary {
     $client = [System.Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromMinutes(10)
     try {
-        $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
+        $response = $client.GetAsync($Uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
         try {
             if (-not $response.IsSuccessStatusCode) { throw "Download failed with HTTP $([int]$response.StatusCode)." }
             $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
@@ -827,19 +851,6 @@ function New-MinerUDataId {
     return $value
 }
 
-function Save-MinerUBatchState {
-    param(
-        [Parameter(Mandatory)]$State,
-        [string]$StateRoot
-    )
-
-    $root = Get-MinerUStateRoot -ExplicitPath $StateRoot
-    if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
-    $path = Join-Path $root ($State.batchId + ".json")
-    $json = $State | ConvertTo-Json -Depth 12
-    [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 function Get-MinerUPendingStates {
     param([string]$StateRoot)
@@ -849,238 +860,26 @@ function Get-MinerUPendingStates {
     $states = New-Object System.Collections.Generic.List[object]
     foreach ($file in (Get-ChildItem -LiteralPath $root -File -Filter "*.json" -ErrorAction SilentlyContinue)) {
         try {
-            $state = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
+            $state = Get-Content -Raw -LiteralPath $file.FullName -Encoding UTF8 | ConvertFrom-Json
             $state | Add-Member -NotePropertyName statePath -NotePropertyValue $file.FullName -Force
             $states.Add($state)
         }
         catch {
-            Write-Warning "Ignoring unreadable MinerU state file: $($file.FullName)"
+            throw "Unreadable MinerU state file; review it before submitting more work: $($file.FullName)"
         }
     }
     return $states.ToArray()
 }
 
-function Start-MinerUApiBatch {
-    param(
-        [Parameter(Mandatory)][object[]]$Items,
-        [Parameter(Mandatory)][string]$Token,
-        [Parameter(Mandatory)][string]$ApiBase,
-        [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Language,
-        [switch]$Ocr,
-        [string]$PageRanges,
-        [int]$OneDriveTimeoutSeconds,
-        [int]$StabilitySeconds,
-        [string]$StateRoot
-    )
-
-    if ($Items.Count -gt $script:MaxFilesPerBatch) { throw "A MinerU batch cannot exceed $($script:MaxFilesPerBatch) files." }
-    $fileEntries = New-Object System.Collections.Generic.List[object]
-    $stateItems = New-Object System.Collections.Generic.List[object]
-    for ($index = 0; $index -lt $Items.Count; $index++) {
-        $item = $Items[$index]
-        Wait-ReadableStableFile -Path $item.pdfPath -TimeoutSeconds $OneDriveTimeoutSeconds -StabilitySeconds $StabilitySeconds | Out-Null
-        $pdf = Get-Item -LiteralPath $item.pdfPath
-        if ($pdf.Length -gt $script:MaxFileBytes) { throw "PDF exceeds 200 MB: $($pdf.FullName)" }
-        $signature = Get-FileSignature -Path $pdf.FullName -IncludeHash
-        $dataId = New-MinerUDataId -Index $index -Stem $pdf.BaseName
-        $entry = [ordered]@{ name = $pdf.Name; data_id = $dataId; is_ocr = [bool]$Ocr }
-        if ($PageRanges) { $entry.page_ranges = $PageRanges }
-        $fileEntries.Add([pscustomobject]$entry)
-        $stateItems.Add([pscustomobject]@{
-            dataId = $dataId
-            pdfPath = $pdf.FullName
-            sourceLength = $signature.length
-            sourceLastWriteUtc = $signature.lastWriteUtc
-            sourceSha256 = $signature.sha256
-        })
-    }
-
-    $payload = [ordered]@{
-        files = $fileEntries.ToArray()
-        model_version = $Model
-        language = $Language
-        enable_formula = $true
-        enable_table = $true
-    }
-    $base = $ApiBase.TrimEnd('/')
-    $data = Invoke-MinerUApiRequest -Uri "$base/file-urls/batch" -Token $Token -Method POST -Body $payload
-    $urls = @($data.file_urls)
-    if ($urls.Count -ne $Items.Count) { throw "MinerU returned $($urls.Count) upload URLs for $($Items.Count) files." }
-    for ($index = 0; $index -lt $Items.Count; $index++) {
-        Send-MinerUUpload -SignedUrl $urls[$index] -FilePath $stateItems[$index].pdfPath
-        $afterHash = (Get-FileHash -LiteralPath $stateItems[$index].pdfPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($afterHash -ne [string]$stateItems[$index].sourceSha256) {
-            throw "PDF changed while it was being uploaded: $($stateItems[$index].pdfPath)"
-        }
-    }
-
-    $state = [pscustomobject]@{
-        schemaVersion = 1
-        skillVersion = $script:SkillVersion
-        batchId = [string]$data.batch_id
-        apiBase = $base
-        model = $Model
-        language = $Language
-        createdUtc = [DateTime]::UtcNow.ToString("o")
-        items = $stateItems.ToArray()
-    }
-    $statePath = Save-MinerUBatchState -State $state -StateRoot $StateRoot
-    $state | Add-Member -NotePropertyName statePath -NotePropertyValue $statePath -Force
-    return $state
-}
-
-function Wait-MinerUApiBatch {
-    param(
-        [Parameter(Mandatory)]$State,
-        [Parameter(Mandatory)][string]$Token,
-        [int]$IntervalSeconds,
-        [int]$TimeoutSeconds
-    )
-
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        $uri = "$($State.apiBase)/extract-results/batch/$($State.batchId)"
-        $data = Invoke-MinerUApiRequest -Uri $uri -Token $Token
-        $results = @($data.extract_result)
-        $states = @($results | ForEach-Object { [string]$_.state })
-        $pending = @($states | Where-Object { $_ -notin @("done", "failed") })
-        if ($results.Count -gt 0 -and $pending.Count -eq 0) { return $results }
-        if ($IntervalSeconds -gt 0) { Start-Sleep -Seconds $IntervalSeconds }
-    } while ([DateTime]::UtcNow -lt $deadline)
-    throw "MinerU batch $($State.batchId) did not finish within $TimeoutSeconds seconds. It remains available for resume."
-}
-
-function Complete-MinerUApiBatch {
-    param(
-        [Parameter(Mandatory)]$State,
-        [Parameter(Mandatory)][string]$Token,
-        [int]$IntervalSeconds,
-        [int]$TimeoutSeconds,
-        [switch]$Resumed
-    )
-
-    $results = Wait-MinerUApiBatch -State $State -Token $Token -IntervalSeconds $IntervalSeconds -TimeoutSeconds $TimeoutSeconds
-    $byId = @{}
-    foreach ($item in @($State.items)) { $byId[[string]$item.dataId] = $item }
-    $conversions = New-Object System.Collections.Generic.List[object]
-    $retryNeeded = $false
-    foreach ($result in $results) {
-        $dataId = [string]$result.data_id
-        $source = $byId[$dataId]
-        if ($null -eq $source) { continue }
-        if ([string]$result.state -ne "done") {
-            $conversions.Add([pscustomobject]@{
-                status = "Failed"; pdfPath = $source.pdfPath; batchId = $State.batchId
-                resumed = [bool]$Resumed; error = [string]$result.err_msg
-            })
-            continue
-        }
-
-        $stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mineru-api-stage-" + [guid]::NewGuid().ToString("N"))
-        $zipPath = Join-Path $stageRoot "result.zip"
-        $extractPath = Join-Path $stageRoot "result"
-        New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
-        try {
-            if (-not (Test-Path -LiteralPath $source.pdfPath -PathType Leaf)) { throw "Source PDF no longer exists." }
-            $currentHash = (Get-FileHash -LiteralPath $source.pdfPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($currentHash -ne [string]$source.sourceSha256) { throw "Source PDF changed after upload." }
-            Receive-MinerUBinary -Uri ([string]$result.full_zip_url) -Destination $zipPath
-            Expand-MinerUSafeZip -ZipPath $zipPath -Destination $extractPath
-            $published = Publish-MinerUApiOutput `
-                -PdfPath $source.pdfPath `
-                -StagePath $extractPath `
-                -Model ([string]$State.model) `
-                -Language ([string]$State.language) `
-                -BatchId ([string]$State.batchId) `
-                -SourceSha256 ([string]$source.sourceSha256)
-            $published | Add-Member -NotePropertyName resumed -NotePropertyValue ([bool]$Resumed)
-            $conversions.Add($published)
-        }
-        catch {
-            $retryNeeded = $true
-            $conversions.Add([pscustomobject]@{
-                status = "Failed"; pdfPath = $source.pdfPath; batchId = $State.batchId
-                resumed = [bool]$Resumed; error = $_.Exception.Message
-            })
-        }
-        finally {
-            if (Test-Path -LiteralPath $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }
-        }
-    }
-    if (-not $retryNeeded -and $State.statePath -and (Test-Path -LiteralPath $State.statePath)) {
-        Remove-Item -LiteralPath $State.statePath -Force
-    }
-    return $conversions.ToArray()
-}
-
-function Invoke-MinerUApiConversions {
-    param(
-        [Parameter(Mandatory)]$ScanReport,
-        [Parameter(Mandatory)][string]$Token,
-        [Parameter(Mandatory)][string]$ApiBase,
-        [ValidateSet("vlm", "pipeline")][string]$Model = "vlm",
-        [string]$Language = "en",
-        [switch]$Ocr,
-        [string]$PageRanges,
-        [ValidateRange(1, 50)][int]$BatchSize = 20,
-        [int]$IntervalSeconds = 10,
-        [int]$TimeoutSeconds = 1800,
-        [int]$OneDriveTimeoutSeconds = 120,
-        [int]$StabilitySeconds = 2,
-        [string]$StateRoot
-    )
-
-    $allResults = New-Object System.Collections.Generic.List[object]
-    $pendingPaths = @{}
-    foreach ($state in (Get-MinerUPendingStates -StateRoot $StateRoot)) {
-        foreach ($stateItem in @($state.items)) { $pendingPaths[[string]$stateItem.pdfPath.ToLowerInvariant()] = $true }
-        try {
-            $completed = Complete-MinerUApiBatch -State $state -Token $Token -IntervalSeconds $IntervalSeconds -TimeoutSeconds $TimeoutSeconds -Resumed
-            foreach ($result in $completed) { $allResults.Add($result) }
-        }
-        catch {
-            if ($_.Exception.Data["MinerUAuthFailure"]) { throw }
-            foreach ($stateItem in @($state.items)) {
-                $allResults.Add([pscustomobject]@{
-                    status = "Failed"; pdfPath = $stateItem.pdfPath; batchId = $state.batchId
-                    resumed = $true; error = $_.Exception.Message
-                })
-            }
-        }
-    }
-
-    $candidates = @($ScanReport.items | Where-Object { $_.status -in @("Missing", "Stale", "IncompleteAssets") })
-    $candidates = @($candidates | Where-Object { -not $pendingPaths.ContainsKey([string]$_.pdfPath.ToLowerInvariant()) })
-    for ($offset = 0; $offset -lt $candidates.Count; $offset += $BatchSize) {
-        $last = [Math]::Min($offset + $BatchSize - 1, $candidates.Count - 1)
-        $batchItems = @($candidates[$offset..$last])
-        try {
-            $state = Start-MinerUApiBatch `
-                -Items $batchItems -Token $Token -ApiBase $ApiBase -Model $Model -Language $Language `
-                -Ocr:$Ocr -PageRanges $PageRanges -OneDriveTimeoutSeconds $OneDriveTimeoutSeconds `
-                -StabilitySeconds $StabilitySeconds -StateRoot $StateRoot
-            $completed = Complete-MinerUApiBatch -State $state -Token $Token -IntervalSeconds $IntervalSeconds -TimeoutSeconds $TimeoutSeconds
-            foreach ($result in $completed) { $allResults.Add($result) }
-        }
-        catch {
-            if ($_.Exception.Data["MinerUAuthFailure"]) { throw }
-            foreach ($item in $batchItems) {
-                $allResults.Add([pscustomobject]@{
-                    status = "Failed"; pdfPath = $item.pdfPath; batchId = $null
-                    resumed = $false; error = $_.Exception.Message
-                })
-            }
-        }
-    }
-    return $allResults.ToArray()
-}
+. (Join-Path $PSScriptRoot 'MinerUApiBatch.Credentials.ps1')
+. (Join-Path $PSScriptRoot 'MinerUApiBatch.Workflow.ps1')
 
 Export-ModuleMember -Function @(
     "Clear-MinerUApiCredential",
     "Get-MinerUApiCredentialPath",
     "Get-MinerUApiEnvironment",
     "Get-MinerUApiToken",
+    "Get-MinerURunTiming",
     "Invoke-MinerUApiConversions",
     "Invoke-MinerURecycle",
     "New-MinerUScanReport",
