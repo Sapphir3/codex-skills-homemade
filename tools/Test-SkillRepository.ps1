@@ -8,4 +8,4 @@ if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) { throw "Repository
 
 & $validator `
     -RepositoryPath $repositoryRoot `
-    -SkillRoot @('paper-library-skills', 'skill-development-tools')
+    -SkillRoot @('lab-workflow-skills', 'paper-library-skills', 'skill-development-tools')

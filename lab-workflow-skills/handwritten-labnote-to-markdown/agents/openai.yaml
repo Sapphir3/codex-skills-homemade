@@ -1,0 +1,4 @@
+interface:
+  display_name: "Handwritten Lab Note to Markdown"
+  short_description: "Convert handwritten lab notes into auditable Markdown"
+  default_prompt: "Use $handwritten-labnote-to-markdown to convert these handwritten lab notes with the supplied Markdown template."
