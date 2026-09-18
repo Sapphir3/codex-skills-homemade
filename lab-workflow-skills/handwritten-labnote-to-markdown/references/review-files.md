@@ -2,7 +2,7 @@
 
 ## `final.md`
 
-Base this file on the supplied template. Keep unsupported fields blank. Insert uncertainty markers immediately after the ambiguous item, for example:
+Base this file on the supplied template. Strict mode retains unsupported fields blank; guided mode omits unsupported optional subfields while preserving fixed headings and metadata. Insert uncertainty markers immediately after the ambiguous item, for example:
 
 ```markdown
 - 渗透率：$0.1\sim10\times10^{-15}\,\mathrm{m^2}$ ⟦U001⟧
@@ -23,6 +23,8 @@ Use this structure:
 ```
 
 Use the same ID everywhere. Do not assign an uncertainty merely because a template field is blank.
+
+IDs in the active queue must appear in either `final.md` or `traceability.md`. A doubt concerning only deleted or unmapped material belongs in the latter; do not insert it artificially into the final experiment record. Use stable IDs across revisions; remove resolved IDs from the active queue and retain their resolution history separately. Author-confirmed relationships do not automatically confirm every numeric character in the same region.
 
 When no uncertainties remain, write:
 
@@ -56,6 +58,27 @@ Then include a page-level table:
 ```
 
 The literal-content column may use Markdown or LaTeX. Keep it faithful and concise; this is an audit map, not a rewritten narrative.
+
+## Optional machine-readable page ledger
+
+`evidence.json` can be supplied to `validate_outputs.py --evidence evidence.json`:
+
+```json
+{
+  "source": "note.pdf",
+  "page_count": 1,
+  "inspected_pages": [1],
+  "evidence": [
+    {"id":"E001", "page":1, "region":"top right", "status":"confirmed", "text":"4.16", "destination":"date"}
+  ]
+}
+```
+
+Supported statuses: `confirmed`, `uncertain`, `crossed out`, `revised`, `unmapped`, `user-confirmed`, `blank`. Include an explicit blank-page item after inspecting an empty page. For multiple PDFs, use one ledger per source to prevent page-number collisions. Keep this ledger synchronized with the Markdown map. Preparation manifests record render completion, not inspection.
+
+Optional role, parent, related-ID and required-final-anchor fields are documented in [guided-template.md](guided-template.md). Guidance-only prompts and illustrative tables are excluded from validation in guided mode; literal fixed structure outside those comments is still checked. Conversion date can be validated against `--run-date`. An optional `--template-mode strict|guided` override is available for explicitly authorized mode selection; unmarked templates default to strict.
+
+The validator checks headings, colon-terminated bullet prompt labels and their section/order, table headers and row widths, template-derived angle-bracket placeholders, bidirectional uncertainty references, required provenance fields and optional ledger page coverage. It does not prove handwriting accuracy, semantic mapping, actual visual inspection or exhaustive transcription. Other prompt styles still require manual structural review.
 
 ## Final response
 

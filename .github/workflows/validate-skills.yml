@@ -40,3 +40,11 @@ jobs:
         run: |
           ./paper-library-skills/mineru-api-batch-convert.tests/Run-Tests.ps1
           ./paper-library-skills/mineru-api-batch-convert.tests/Test-Credentials.ps1
+
+      - name: Install lab-note test dependencies
+        shell: pwsh
+        run: python -m pip install -r ./lab-workflow-skills/handwritten-labnote-to-markdown.tests/requirements.txt
+
+      - name: Test handwritten-labnote-to-markdown
+        shell: pwsh
+        run: python -X utf8 -B ./lab-workflow-skills/handwritten-labnote-to-markdown.tests/test_runtime.py

@@ -6,7 +6,7 @@ Public Codex skills developed and maintained across several work domains. Skills
 
 | Category | Skill | Purpose | Current release |
 |---|---|---|---|
-| `lab-workflow-skills` | `handwritten-labnote-to-markdown` | Convert handwritten scientific lab notes into auditable, template-driven Markdown with explicit uncertainty and traceability records | `v1.0.0` |
+| `lab-workflow-skills` | `handwritten-labnote-to-markdown` | Convert handwritten scientific lab notes into auditable, template-driven Markdown with explicit uncertainty and traceability records | `v1.1.0` |
 | `paper-library-skills` | `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v2.0.0` |
 | `skill-development-tools` | `codex-skill-lifecycle` | Create, test, version, package, publish, and hand off homemade Codex skills | `v1.0.0` |
 

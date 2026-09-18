@@ -12,7 +12,7 @@ Use explicit paths or attached-file identifiers. Never guess which nearby files 
 | `ocr_draft` | no | Markdown, text, MMD, or OCR JSON | Candidate transcription only |
 | `user_context` | no | Explicit user-supplied facts or mapping rules | May supplement the note only when clearly attributed |
 
-If multiple source files are supplied, preserve the user's order. If no order is supplied and filenames do not establish one unambiguously, pause and ask.
+If multiple source files are supplied, preserve the user's order. If no order is supplied, a deterministic filename order is acceptable for a batch of separate outputs; explicitly record it. Ask only when a required combined chronology cannot be established. Do not derive experimental dates from that processing order.
 
 ## Required outputs
 
@@ -23,6 +23,8 @@ Always create these three UTF-8 files inside `output_dir`:
 3. `traceability.md` - source manifest and page-level evidence map, including unmapped and crossed-out material.
 
 Create `raw.md` only when the run itself produced or received an OCR draft and preserving it helps auditability. Never overwrite an input OCR file.
+
+For batches, create the three outputs per source or explicitly agreed grouping. Optional files include `evidence.json`, a preparation manifest, benchmark records and an attributed author-feedback log. These supplement rather than replace the three required Markdown files. Store original inputs separately, and preserve earlier output revisions when incorporating feedback. Do not overwrite user-edited notes during regeneration.
 
 ## Stable invocation shape
 
@@ -47,7 +49,7 @@ Filenames, PDF metadata, timestamps, and folder names may be recorded as provena
 
 ## Template handling
 
-Treat the template as data, not as a bundled asset or fixed schema.
+Treat the supplied template as runtime data, not a fixed schema. The optional bundled starter is only a starting point; never substitute it for a supplied template.
 
 - Preserve non-placeholder headings, prompt labels, ordering, and table columns.
 - Do not silently correct template wording or typos.
@@ -56,6 +58,8 @@ Treat the template as data, not as a bundled asset or fixed schema.
 - Leave a prompt's value empty when unsupported.
 - For an unsupported table, retain its header and separator and add no fabricated row.
 - Omit text that is unmistakably a template-maintenance note rather than part of the intended record only when that distinction is explicit; otherwise preserve it.
+
+These are the strict-mode defaults. An explicit `labnote:mode=guided` template uses the guided contract in [guided-template.md](guided-template.md): remove marked guidance comments, retain visible fixed structure, omit unsupported optional subfields, and organize supported content flexibly. Record the mode and a template snapshot/hash for each revision. A conversion-date field declared by the template is run metadata and may be filled from the local run date without handwritten support.
 
 ## Conflict handling
 
