@@ -7,12 +7,12 @@ Public Codex skills developed and maintained across several work domains. Skills
 | Category | Skill | Purpose | Current release |
 |---|---|---|---|
 | `lab-workflow-skills` | `handwritten-labnote-to-markdown` | Convert handwritten scientific lab notes into auditable, template-driven Markdown with explicit uncertainty and traceability records | `v1.1.0` |
-| `paper-library-skills` | `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v2.0.0` |
+| `paper-library-skills` | `mineru-api-batch-convert` | Convert local or Zotero-resolved academic PDFs to same-directory Markdown through the official MinerU API | `v2.0.1` |
 | `skill-development-tools` | `codex-skill-lifecycle` | Create, test, version, package, publish, and hand off homemade Codex skills | `v1.0.0` |
 
 ## CCSwitch Installation And Updates
 
-MinerU v2 preserves stale tracked outputs by default. After reviewing the affected PDFs and obtaining explicit replacement consent, use `-AllowReplaceStale`. Invalid, untracked, or incomplete outputs still require manual review. See [v2.0.0 release notes](releases/mineru-api-batch-convert-v2.0.0.md).
+MinerU v2 preserves stale tracked outputs by default. After reviewing the affected PDFs and obtaining explicit replacement consent, use `-AllowReplaceStale`. Invalid, untracked, or incomplete outputs still require manual review. See [v2.0.0 release notes](releases/mineru-api-batch-convert-v2.0.0.md). v2.0.1 accepts OneDrive/Cloud Files placeholder paths while still rejecting symbolic links, junctions, and other reparse points; see [v2.0.1 release notes](releases/mineru-api-batch-convert-v2.0.1.md).
 
 Add this repository to the CCSwitch Skills repository manager:
 

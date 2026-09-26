@@ -364,6 +364,96 @@ try {
         Move-Item -LiteralPath $heldAssets -Destination $integrityAssets
     }
 
+    # Cloud Files placeholders (OneDrive) carry reparse tags but do not redirect paths; other reparse points stay linked.
+    $readTag = { param($path) & (Get-Module MinerUApiBatch.Core) { param($p) Get-MinerUReparseTag -Item (Get-Item -LiteralPath $p -Force) } $path }
+    $plainTag = & $readTag $integrityPdf
+    Assert-True ($plainTag -eq 0 -or ($plainTag -band 0xFFFF0FFFL) -eq 0x9000001AL) 'A fixture file has no reparse tag (or a Cloud Files tag when the suite runs in a synced folder).'
+    $cloudRoot = Join-Path $tempRoot 'cloud'
+    $cloudStage = Join-Path $tempRoot 'cloud-stage'
+    New-Item -ItemType Directory -Path $cloudRoot | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $cloudStage 'images') -Force | Out-Null
+    $cloudPdf = Join-Path $cloudRoot 'cloud.pdf'
+    New-TestPdf $cloudPdf 'cloud placeholder'
+    [IO.File]::WriteAllText((Join-Path $cloudStage 'full.md'), "# Cloud`n![Figure](images/figure.png)")
+    [IO.File]::WriteAllBytes((Join-Path $cloudStage 'images\figure.png'), $figureBytes)
+    $cloudAssets = Join-Path $cloudRoot 'cloud.assets'
+    $simulated = & (Get-Module MinerUApiBatch.Core) {
+        param($pdf, $stage, $assets)
+        # Every path component and asset entry (or only entries under SimulatedUnder) reports SimulatedTag.
+        $script:SimulatedTag = 0L; $script:SimulatedUnder = $null
+        function Get-MinerUReparseTag {
+            param($Item)
+            if ($script:SimulatedUnder -and !$Item.FullName.StartsWith($script:SimulatedUnder + '\')) { return 0L }
+            $script:SimulatedTag
+        }
+        $script:SimulatedTag = 0x9000601AL
+        $hash = (Get-FileHash -LiteralPath $pdf -Algorithm SHA256).Hash.ToLowerInvariant()
+        $published = Publish-MinerUApiOutput -PdfPath $pdf -StagePath $stage -Model vlm -Language en -BatchId cloud -SourceSha256 $hash
+        $cases = foreach ($case in @(
+            @(0x9000001AL, $null), @(0x9000601AL, $null), @(0x9000F01AL, $null), @(0x9000E01AL, $assets),
+            @(0x9000001CL, $null), @(0x80000017L, $null), @(0xA000000CL, $null), @(0xA0000003L, $null), @(-1L, $null), @(0xA000000CL, $assets))) {
+            $script:SimulatedTag = $case[0]; $script:SimulatedUnder = $case[1]
+            $item = (New-MinerUScanReport -PdfPath @($pdf)).items[0]
+            [pscustomobject]@{ tag = $case[0]; assetsOnly = [bool]$case[1]; status = $item.status; error = if ($item.PSObject.Properties['error']) { $item.error } else { '' } }
+        }
+        $script:SimulatedTag = 0xA000000CL; $script:SimulatedUnder = $null
+        $blockedPdf = Join-Path (Split-Path -Parent $pdf) 'blocked.pdf'
+        [IO.File]::Copy($pdf, $blockedPdf)
+        $blockedHash = (Get-FileHash -LiteralPath $blockedPdf -Algorithm SHA256).Hash.ToLowerInvariant()
+        try { Publish-MinerUApiOutput -PdfPath $blockedPdf -StagePath $stage -Model vlm -Language en -BatchId linked -SourceSha256 $blockedHash | Out-Null; $blocked = 'Published' }
+        catch { $blocked = $_.Exception.Message }
+        $script:SimulatedTag = 0L
+        [pscustomobject]@{ published = $published; cases = @($cases); blocked = $blocked; blockedMarkdown = Test-Path -LiteralPath ([IO.Path]::ChangeExtension($blockedPdf, '.md')) }
+    } $cloudPdf $cloudStage $cloudAssets
+    Assert-True ($simulated.published.status -eq 'Converted' -and $simulated.published.assetCount -eq 1) 'Publication into a cloud-tagged directory succeeds.'
+    foreach ($case in $simulated.cases) {
+        $cloud = ($case.tag -band 0xFFFF0FFFL) -eq 0x9000001AL
+        $expected = if ($cloud) { 'Current' } elseif ($case.assetsOnly) { 'IncompleteAssets' } else { 'InvalidMarker' }
+        $message = if ($cloud) { '' } elseif ($case.assetsOnly) { 'Linked assets require manual review.' } else { 'Linked paths require manual review.' }
+        Assert-True ($case.status -eq $expected -and $case.error -eq $message) ('Reparse tag 0x{0:X} (assets only: {1}) should scan as {2}; got {3} {4}' -f $case.tag, $case.assetsOnly, $expected, $case.status, $case.error)
+    }
+    Assert-True ($simulated.blocked -eq 'Linked paths require manual review.' -and !$simulated.blockedMarkdown) 'Publication through a non-cloud reparse point is refused before writing output.'
+
+    $linkCleanup = New-Object System.Collections.Generic.List[string]
+    try {
+        $junctionRoot = Join-Path $tempRoot 'junction-cloud'
+        $null = New-Item -ItemType Junction -Path $junctionRoot -Target $cloudRoot
+        $linkCleanup.Add($junctionRoot)
+        Assert-True ((& $readTag $junctionRoot) -eq 0xA0000003L) 'A real junction reports IO_REPARSE_TAG_MOUNT_POINT.'
+        $viaJunction = (New-MinerUScanReport -PdfPath @(Join-Path $junctionRoot 'cloud.pdf')).items[0]
+        Assert-True ($viaJunction.status -eq 'InvalidMarker' -and $viaJunction.error -eq 'Linked paths require manual review.') 'A junction in the parent chain is still a linked path.'
+        $assetJunction = Join-Path $cloudAssets 'images\linked'
+        $null = New-Item -ItemType Junction -Path $assetJunction -Target $outside
+        $linkCleanup.Add($assetJunction)
+        $junctionAsset = (New-MinerUScanReport -PdfPath @($cloudPdf)).items[0]
+        Assert-True ($junctionAsset.status -eq 'IncompleteAssets' -and $junctionAsset.error -eq 'Linked assets require manual review.' -and (Test-Path -LiteralPath $sentinel)) 'A junction inside assets is still a linked asset.'
+
+        # Symbolic links need elevation or Developer Mode; mklink uses the unprivileged flag when allowed.
+        $symlinkRoot = Join-Path $tempRoot 'symlink-cloud'
+        $assetSymlink = Join-Path $cloudAssets 'images\linked.png'
+        $mklink = Start-Process -FilePath cmd.exe -ArgumentList ('/c mklink /D "{0}" "{1}"' -f $symlinkRoot, $cloudRoot) -WindowStyle Hidden -Wait -PassThru
+        if ($mklink.ExitCode -eq 0 -and (Test-Path -LiteralPath $symlinkRoot)) {
+            $linkCleanup.Add($symlinkRoot)
+            $null = Start-Process -FilePath cmd.exe -ArgumentList ('/c mklink "{0}" "{1}"' -f $assetSymlink, (Join-Path $cloudAssets 'images\figure.png')) -WindowStyle Hidden -Wait -PassThru
+            if (Test-Path -LiteralPath $assetSymlink) { $linkCleanup.Add($assetSymlink) }
+            Assert-True ((& $readTag $symlinkRoot) -eq 0xA000000CL -and (& $readTag $assetSymlink) -eq 0xA000000CL) 'Real symbolic links report IO_REPARSE_TAG_SYMLINK.'
+            $viaSymlink = (New-MinerUScanReport -PdfPath @(Join-Path $symlinkRoot 'cloud.pdf')).items[0]
+            Assert-True ($viaSymlink.status -eq 'InvalidMarker' -and $viaSymlink.error -eq 'Linked paths require manual review.') 'A directory symlink in the parent chain is still a linked path.'
+            [IO.Directory]::Delete($assetJunction); [void]$linkCleanup.Remove($assetJunction)
+            $symlinkAsset = (New-MinerUScanReport -PdfPath @($cloudPdf)).items[0]
+            Assert-True ($symlinkAsset.status -eq 'IncompleteAssets' -and $symlinkAsset.error -eq 'Linked assets require manual review.') 'A file symlink inside assets is still a linked asset.'
+            $symlinkCoverage = 'real'
+        }
+        else { $symlinkCoverage = 'simulated only (symbolic link creation not permitted)' }
+    }
+    finally {
+        foreach ($link in @($linkCleanup)) {
+            if (!(Test-PathWithinForTests $link $tempRoot) -or !((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe link cleanup.' }
+            if ((Get-Item -LiteralPath $link -Force).PSIsContainer) { [IO.Directory]::Delete($link) } else { [IO.File]::Delete($link) }
+        }
+    }
+    Assert-True ((New-MinerUScanReport -PdfPath @($cloudPdf)).items[0].status -eq 'Current' -and (Test-Path -LiteralPath $sentinel)) 'Removing test links leaves the cloud fixture and link targets intact.'
+
     $staleResumePdf = Join-Path $papers 'resumestale.pdf'
     New-TestPdf $staleResumePdf 'stale checkpoint consent'
     $resumeParameters = $common.Clone(); $resumeParameters.PdfPath = @($staleResumePdf)
@@ -382,7 +472,7 @@ try {
     Assert-True ($pendingConsent.summary.convertedCount -eq 1 -and $pendingConsent.summary.resumedCount -eq 1 -and (Invoke-RestMethod "http://127.0.0.1:$port/stats").batches -eq $beforeBatches) 'Approved stale recovery reuses its original batch.'
 
     $environment = Invoke-Entry @{Action='Environment'}
-    Assert-True ($environment.skillVersion -eq '2.0.0' -and $environment.skillPath -eq [IO.Path]::GetFullPath($skillRoot)) 'Environment identifies the actual runtime version and source directory.'
+    Assert-True ($environment.skillVersion -eq '2.0.1' -and $environment.skillPath -eq [IO.Path]::GetFullPath($skillRoot)) 'Environment identifies the actual runtime version and source directory.'
 
     foreach ($rejection in @('rejectquota','rejectvalidation','rejectlogical')) {
         $rejectedPdf = Join-Path $papers ($rejection + '.pdf')
@@ -523,6 +613,7 @@ try {
     [pscustomobject]@{
         passed = $true
         checks = $script:checks
+        symlinkCoverage = $symlinkCoverage
         tempRoot = $tempRoot
     }
 }

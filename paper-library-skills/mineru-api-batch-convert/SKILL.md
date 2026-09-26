@@ -5,7 +5,7 @@ description: Convert authorized local or Zotero-resolved PDFs to same-directory 
 
 # MinerU API Batch Convert
 
-Release: **2.0.0**. Use the bundled scripts with Windows PowerShell 5.1 or PowerShell 7. No local MinerU installation is required.
+Release: **2.0.1**. Use the bundled scripts with Windows PowerShell 5.1 or PowerShell 7. No local MinerU installation is required.
 
 ## Resolve Scope And Permission
 
@@ -45,7 +45,7 @@ Use `Scan` only when a preview, audit, or orphan review is requested:
 | `Stale` | Preserve unless replacement was explicitly approved. |
 | `ExistingUntracked`, `IncompleteAssets`, `InvalidMarker` | Report for review; do not upload or overwrite. |
 
-Ownership checks require matching sibling filenames and reject linked paths. Legacy schema-1 markers and schema-1/2 checkpoints remain readable when safe. To identify the copy actually executing, run `-Action Environment` and report `skillVersion` and `skillPath`; do not infer a release from an installer hash.
+Ownership checks require matching sibling filenames and reject linked paths (symlinks, junctions, other non-cloud reparse points); OneDrive/Cloud Files placeholders are allowed. Legacy schema-1 markers and schema-1/2 checkpoints remain readable when safe. To identify the copy actually executing, run `-Action Environment` and report `skillVersion` and `skillPath`; do not infer a release from an installer hash.
 
 ## Recycle Confirmed Orphans
 

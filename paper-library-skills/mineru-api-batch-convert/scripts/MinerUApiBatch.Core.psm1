@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-$script:SkillVersion = "2.0.0"
+$script:SkillVersion = "2.0.1"
 $script:MarkerRegex = '<!--\s*mineru-batch-convert\s+(\{.*\})\s*-->'
 $script:MaxFilesPerBatch = 50
 $script:MaxFileBytes = 200MB
@@ -133,13 +133,83 @@ function Read-MinerUMarker {
     catch { return $null }
 }
 
+if (!('MinerUApiBatch.ReparseTagReader' -as [type])) {
+    # Without the reader every reparse point remains a linked path (fail closed).
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace MinerUApiBatch
+{
+    public static class ReparseTagReader
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FindData
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint SizeHigh;
+            public uint SizeLow;
+            public uint Reserved0;
+            public uint Reserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string FileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string AlternateFileName;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstFileW(string fileName, out FindData data);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool FindClose(IntPtr handle);
+
+        // Reads the tag from the directory entry without opening, following, or hydrating the item.
+        // Returns 0 for no reparse point and -1 when the entry cannot be read.
+        public static long Get(string path)
+        {
+            if (path.Length >= 260 && !path.StartsWith(@"\\?\"))
+            {
+                path = path.StartsWith(@"\\") ? @"\\?\UNC\" + path.Substring(2) : @"\\?\" + path;
+            }
+            FindData data;
+            IntPtr handle = FindFirstFileW(path, out data);
+            if (handle == new IntPtr(-1)) { return -1; }
+            FindClose(handle);
+            return (data.Attributes & 0x400) == 0 ? 0 : (long)data.Reserved0;
+        }
+    }
+}
+'@
+    }
+    catch { }
+}
+
+function Get-MinerUReparseTag {
+    param([Parameter(Mandatory)][IO.FileSystemInfo]$Item)
+
+    if (!($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return 0L }
+    if (!('MinerUApiBatch.ReparseTagReader' -as [type])) { return -1L }
+    return [MinerUApiBatch.ReparseTagReader]::Get($Item.FullName)
+}
+
+function Test-MinerULinkedItem {
+    param([Parameter(Mandatory)][IO.FileSystemInfo]$Item)
+
+    $tag = [int64](Get-MinerUReparseTag -Item $Item) -band 0xFFFFFFFFL
+    # Cloud Files placeholders (IO_REPARSE_TAG_CLOUD and CLOUD_1..F, e.g. OneDrive) keep their own path;
+    # symlinks, junctions/mount points, unreadable tags, and every other reparse point may redirect it.
+    return $tag -ne 0 -and ($tag -band 0xFFFF0FFFL) -ne 0x9000001AL
+}
+
 function Assert-MinerUPlainPath {
     param([Parameter(Mandatory)][string]$Path)
 
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
         $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
-        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        if ($item -and (Test-MinerULinkedItem -Item $item)) {
             throw 'Linked paths require manual review.'
         }
         $current = Split-Path -Parent $current
@@ -185,7 +255,7 @@ function Assert-MinerUOutputAssets {
         }
         $entries = @(Get-ChildItem -LiteralPath $Paths.assetsPath -Recurse -Force -ErrorAction Stop)
         foreach ($entry in $entries) {
-            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked assets require manual review.' }
+            if (Test-MinerULinkedItem -Item $entry) { throw 'Linked assets require manual review.' }
         }
         $files = @($entries | Where-Object { !$_.PSIsContainer })
     }
