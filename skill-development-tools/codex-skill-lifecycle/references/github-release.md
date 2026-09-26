@@ -24,4 +24,4 @@ Do not store `gh` credentials in project files. Use device-local authentication.
 
 ## Completion Boundary
 
-Successful GitHub publication is the default stopping boundary. Report the exact CCSwitch handoff fields defined in `ccswitch.md` and wait for the user. GitHub publication alone does not grant permission to open CCSwitch, remove an existing installation, or run an update.
+If CCSwitch uses a separate curated distribution repository, update it first as described in `distribution-repository.md`; the upstream release alone is not visible to CCSwitch. Successful publication to the repository CCSwitch uses is the default stopping boundary. Report the exact CCSwitch handoff fields defined in `ccswitch.md` and wait for the user. GitHub publication alone does not grant permission to open CCSwitch, remove an existing installation, or run an update.

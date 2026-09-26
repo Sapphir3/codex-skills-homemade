@@ -8,13 +8,13 @@ Ordinary requests such as “create,” “update,” “publish,” or “relea
 
 ## Manual Handoff
 
-After a successful GitHub release, stop and report:
+After a successful GitHub release and, when CCSwitch uses a curated distribution repository, its update (see `distribution-repository.md`), stop and report:
 
 - skill name and semantic version;
-- full GitHub repository URL and branch;
+- full URL and branch of the repository CCSwitch uses, plus the upstream development repository when they differ;
 - category path and repository-relative skill path;
-- commit, tag, and Release URL;
-- ZIP name and SHA-256;
+- commit, tag, and Release URL for each repository updated;
+- ZIP names and SHA-256 values;
 - local and CI validation result;
 - action: add repository and install, or check updates;
 - expected observable content for an update test.

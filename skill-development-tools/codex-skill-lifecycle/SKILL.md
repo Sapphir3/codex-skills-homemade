@@ -8,7 +8,7 @@ description: Create, revise, test, version, package, and publish homemade Codex 
 Manage the whole release without confusing its three distinct artifacts:
 
 - the synchronized local development source is authoritative for editing;
-- the tested GitHub default branch is the CCSwitch update channel;
+- the tested GitHub default branch of the repository CCSwitch is configured to use is the update channel; this may be a curated distribution repository rather than the development repository;
 - immutable tags, releases, and single-skill ZIPs are version records and offline installers.
 
 ## Select The Mode
@@ -60,6 +60,8 @@ Require exactly one `SKILL.md` in each release ZIP. Prefer one top-level directo
 ## Publish And Hand Off
 
 Read [references/github-release.md](references/github-release.md) before GitHub publication. Confirm authentication, clean scope, exact staged files, tests, ZIP digest, and CI. GitHub publication does not authorize CCSwitch application control.
+
+CCSwitch may install homemade skills from a curated distribution repository instead of the development repository. After the upstream release succeeds, follow [references/distribution-repository.md](references/distribution-repository.md) to update the distributed copy; a release left only in the development repository never appears as a CCSwitch update.
 
 After publication, follow [references/ccswitch.md](references/ccswitch.md). Default to a manual handoff that reports the skill name, version, full repository URL, branch, category, tag, release, ZIP digest, CI result, and whether the user should add the repository or check for updates. Resume recordkeeping after the user reports the result.
 
